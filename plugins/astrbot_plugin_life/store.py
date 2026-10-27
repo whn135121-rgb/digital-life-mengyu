@@ -349,7 +349,12 @@ class LifeStore:
             last_dt = datetime.fromisoformat(str(last))
         except (TypeError, ValueError):
             return 0.0
-        return round(max(0.0, (dt - last_dt).total_seconds() / 60.0), 1)
+        try:
+            delta = (dt - last_dt).total_seconds()
+        except TypeError:
+            # 一边带时区一边不带（手改过 state.json 时会这样）：都按本地墙钟比较
+            delta = (dt.replace(tzinfo=None) - last_dt.replace(tzinfo=None)).total_seconds()
+        return round(max(0.0, delta / 60.0), 1)
 
     def touch_talk(self, dt: datetime | None = None, journal: bool = False) -> dict:
         """记一次对话（每轮请求调用一次），只改记账，不改驱力；驱力由下一拍向低目标收敛。"""
@@ -514,10 +519,14 @@ class LifeStore:
         return "\n".join(lines)
 
     def render_line(self) -> str:
-        """注入对话的一句话（≤130 字）：只有系统事实 + 她自己填过的字段。"""
+        """注入对话的一句话（≤130 字）：只给事实，不给结论。
+
+        概念文档 v4.0 §4.5：情绪与语气的解读交给模型。这里不写「这会儿正想找他」
+        这类替她下的结论，只给可核对的事实（时间、地点、在做什么、多久没说话）
+        以及她自己填过的字段。
+        """
         sched = self.schedule()
         me = self.self_fields()
-        decision = (self.load_state().get("decision") or _empty_decision())
         if sched:
             head = (
                 f"（你此刻：{sched.get('weekday') or ''} {sched.get('local', '')[11:]}，"
@@ -525,21 +534,20 @@ class LifeStore:
             )
             if sched.get("detail"):
                 head += f"；{sched['detail']}"
-            head += "。这是你真实的一天，不用主动交代，也别把这句括号原样说出来。"
+            head += "。"
+            idle = int(self.idle_minutes())
+            if idle >= 30:
+                head += f"距上次说话已 {idle // 5 * 5} 分钟。"
         else:
             head = "（你此刻：时间与作息暂时读不到，别猜。"
-        if decision.get("action") == "opener":
-            head += "你隔了一阵没人说话，这会儿正想找他。"
         noted = [
             f"{SELF_LABELS[name]}={me[name]}"
             for name in SELF_FIELDS
             if me.get(name)
         ]
         if noted:
-            head += "你自己记过：" + "，".join(noted) + "。）"
-        else:
-            head += "）"
-        return head
+            head += "你自己记过：" + "，".join(noted) + "。"
+        return head + "不必复述这段。）"
 
     def summary(self) -> dict:
         state = self.load_state()

@@ -1,5 +1,5 @@
 name: astrbot_plugin_life
 desc: 梦屿的生活状态与驱力：独占 life 目录、每小时幂等推进、60 秒心跳、作息事实快照、四驱力低通（social/curiosity/play/rest）、阈值判断（想找他/困了/静默），对话内唯一注入点，以及 life_state（只读）/ life_update（自写）两个工具。
-version: v0.3.2
+version: v0.3.3
 author: dsh
 repo: ""

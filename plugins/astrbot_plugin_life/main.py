@@ -29,7 +29,7 @@ from astrbot.api.star import Context, Star, register
 from .store import DRIVES, SELF_FIELDS, SELF_LABELS, LifeStore
 
 PLUGIN_NAME = "astrbot_plugin_life"
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 LOG = "[Life]"
 
 # qqbot/data/plugins/astrbot_plugin_life/main.py -> qqbot/data
