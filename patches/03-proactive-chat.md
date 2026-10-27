@@ -133,3 +133,18 @@ def _life_decision() -> dict:
 - `life` 被禁用 → 同上。
 - 免打扰、已达到未回复上限、冷却中、原排期已经更近 → 一律不动。
 - 巡检循环本身异常 → 只打 WARN，下一轮继续；`terminate()` 里先取消任务再关调度器。
+
+## 追加补丁（2026-10-27 17:54）：`decline` 闸门
+
+`chat_flow.py` 的 `_life_gate()` 在 `sleepy` 之后加一条：
+
+```python
+if decision.get("action") == "decline":
+    # 她自己说了「这会儿先别找我」：到期时间由 life 插件管，这里只服从
+    return False, "life_decline"
+```
+
+- 与 `sleepy` 同一个闸门位置，`_is_chat_allowed()` 返回 `False` 后走「跳过并重新调度」，不发消息。
+- 日志单独一支：`她自己说了先别找（life: decline），跳过并重新调度喵。`
+- 不读 `until`：到期由 `life` 的 `decide()` 自动失效，`proactive_chat` 只服从当下 `decision`，避免两边各算一次时间。
+- `opener` 提前的巡检只认 `action == "opener"`，`decline` 天然不会被提前。

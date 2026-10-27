@@ -26,10 +26,17 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
-from .store import DRIVES, SELF_FIELDS, SELF_LABELS, LifeStore
+from .store import (
+    DECLINE_MAX_HOURS,
+    DECLINE_MIN_HOURS,
+    DRIVES,
+    SELF_FIELDS,
+    SELF_LABELS,
+    LifeStore,
+)
 
 PLUGIN_NAME = "astrbot_plugin_life"
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 LOG = "[Life]"
 
 # qqbot/data/plugins/astrbot_plugin_life/main.py -> qqbot/data
@@ -408,6 +415,30 @@ class LifePlugin(Star):
             return f"已记下：{SELF_LABELS[name]}＝{text}"
         return f"已清空：{SELF_LABELS[name]}"
 
+    @filter.llm_tool(name="life_decline")
+    async def life_decline(
+        self, event: AstrMessageEvent, hours: float = 2, reason: str = ""
+    ):
+        """当她自己这会儿不想说话、想安静待着时调用：告诉系统「到某个时间之前先别找我」。
+        只在她真的不想聊时用，不要拿它当撒娇或者玩笑。到点自动失效，也可以随时手动结束。
+
+        Args:
+            hours(number): 安静多久，0.5 到 24 小时，默认 2。
+            reason(string): 一句理由，可不填，不超过 40 字。
+        Returns:
+            一段确认文字。
+        """
+        self._ensure_task()
+        try:
+            span = float(hours or 0)
+        except (TypeError, ValueError):
+            span = 2.0
+        span = min(DECLINE_MAX_HOURS, max(DECLINE_MIN_HOURS, span))
+        decline = self.store.set_decline(span, reason or "")
+        self._update_drives(force=True)
+        until = str(decline.get("until") or "")[:16].replace("T", " ")
+        return f"记下了：{until} 之前不主动找你，也不会提前挪时间。"
+
     # ------------------------------------------------------------ 命令
 
     @filter.command("life")
@@ -418,6 +449,18 @@ class LifePlugin(Star):
             yield event.plain_result("权限不足：仅 AstrBot 管理员可以查看。")
             return
         arg = str(event.message_str or "").strip().lower()
+        if arg in {"decline", "安静", "别找我"}:
+            decline = self.store.set_decline(2.0, "手动")
+            self._update_drives(force=True)
+            yield event.plain_result(
+                f"已进入安静状态，到 {decline.get('until')} 为止（/life clear 取消）。"
+            ).use_t2i(False)
+            return
+        if arg in {"clear", "reset", "取消", "恢复"}:
+            self.store.clear_decline()
+            self._update_drives(force=True)
+            yield event.plain_result("已取消安静状态。").use_t2i(False)
+            return
         if arg in {"files", "path", "文件"}:
             state = self.store.load_state()
             lines = [
@@ -452,6 +495,11 @@ class LifePlugin(Star):
             rows.append(
                 f"判断：{decision.get('action')}（理由 {decision.get('reason')}，"
                 f"{decision.get('drive')}={decision.get('value')}，{decision.get('at')}）"
+            )
+            declining, until, why = self.store.decline_active()
+            rows.append(
+                f"安静：{'到 ' + str(until) if declining else '无'}"
+                f"{'（' + str(why) + '）' if declining and why else ''}"
             )
             rows.append(f"阈值：social ≥ {self.social_threshold:g} 且闲置 ≥ {self.idle_trigger_minutes:g} 分钟 → opener")
             yield event.plain_result("\n".join(rows)).use_t2i(False)

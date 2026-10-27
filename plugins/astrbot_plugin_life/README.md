@@ -11,11 +11,12 @@ v0.3.0 起它同时是**对话内唯一的注入点**——`astrbot_plugin_ai_de
 - **每 60 秒心跳**：J3 判据（重启 2 分钟内任务恢复、心跳在跳）就看这个文件
 - **作息事实快照**：读 `data/life/life_state.py` 的 `state()`，把「此刻在哪、在做什么、什么感觉」写进 `state.json` 的 `fact.schedule`。作息表是纯函数，改课表改那个文件即可
 - **四驱力**：social / curiosity / play / rest，低通 `v_t = 0.7·v_{t-1} + 0.3·v_target`，每 60 秒落一次盘
-- **阈值判断**：`decision` 写进 `state.json`，只有六种出口——`opener`（想找他）/ `sleepy`（困了）/ `none`（静默时段）/ `none`（刚说过话）/ `none`（social 还低）
+- **阈值判断**：`decision` 写进 `state.json`，动作只有四类——`opener`（想找他）/ `sleepy`（困了）/ `decline`（她自己说了先别找）/ `none`（静默时段、刚说过话、social 还低等，理由在 `reason` 里）
 - **注入**：`on_llm_request` 在系统提示末尾追加一行（≤130 字，已有则不重复追加）。**只给事实、不给结论**（v4.0 §4.5）：时间、地点、在做什么、感觉、多久没说话、她自己填过的字段；不再写「这会儿正想找他」这类替她下的判断，情绪与语气交回模型
 - **工具 `life_state`（只读）**：她可以被问到「现在在干嘛」，读到事实与她自填的两栏
 - **工具 `life_update`（自写）**：`field` ∈ activity/location/mood/note，`value` 为空表示清回未设置；只写 `self`，不碰事实
-- **管理员命令 `/life`**：`/life` 看状态，`/life files` 看文件位置与作息模块加载情况，`/life why` 看四驱力的当前值/目标值、闲置分钟、判断与理由（调阈值时用这个）
+- **工具 `life_decline`（拒绝出口）**：她可以在真的不想聊时说「到几点之前先别找我」（0.5–24 小时，默认 2），写进 `state.decline.until`；`decide()` 立刻转 `decline`，`proactive_chat` 的闸门据此不发、也不提前挪时间。**到期自动失效**，不需要谁去清；`/life clear` 可提前结束
+- **管理员命令 `/life`**：`/life` 看状态，`/life files` 看文件位置与作息模块加载情况，`/life why` 看四驱力的当前值/目标值、闲置分钟、判断与理由、安静窗口（调阈值时用这个），`/life decline` / `/life clear` 手动进出安静窗口
 
 ## 状态分两栏
 
@@ -39,7 +40,19 @@ v0.3.0 起它同时是**对话内唯一的注入点**——`astrbot_plugin_ai_de
 
 `social ≥ social_threshold`（默认 0.7）**且**闲置 ≥ `idle_trigger_minutes`（默认 45）时才判 `opener`。`recognition` / `achievement` 还没做——它们要有关系和成就数据，属于 S4。
 
-**判断不等于发送**：判断只写 `state.json`、只影响注入那一句；真正发不发由 `proactive_chat` 决定。同一条资源一个权威。
+**判断不等于发送**：判断只写 `state.json`，注入只给事实；真正发不发由 `proactive_chat` 决定。同一条资源一个权威。
+
+## 拒绝出口（v0.4.0）
+
+她有权说「这会儿先别找我」，而且这句话要**真的生效**：
+
+| 环节 | 行为 |
+| --- | --- |
+| 她调用 `life_decline(hours=2, reason=...)` | 写 `state.decline = {until, reason, at}`，时长夹在 0.5–24 小时 |
+| `decide()` | 窗口内一律返回 `action="decline"`（优先级最高，连「困了」都不覆盖它） |
+| 注入那一行 | 加一条事实：「你自己说过 19:00 之前先别找人说话。」——是事实，不是结论 |
+| `proactive_chat._life_gate()` | 返回 `(False, "life_decline")`：不发、不提前挪时间，日志写明原因 |
+| 到期 | `until` 过了自动失效，`decide()` 回到正常出口，无需任何人清理 |
 
 ## 配置（`_conf_schema.json`）
 
@@ -61,6 +74,7 @@ v0.3.0 起它同时是**对话内唯一的注入点**——`astrbot_plugin_ai_de
 - 插件层 9 项：注入追加一次、重复请求不重复追加、`inject_enabled=false` 时不改 prompt、`life_update` 别名/超长截断/空值清空/非法字段拒绝
 - 驱力 16 项：6 小时模拟里单步变化 ≤0.075（阈值是 0.3）、social 随闲置单调上升并收敛到 0.95、`decide` 四个出口各命中一次、上课/睡觉的目标值被压低、注入前判断后记账（第一句带「想找他」、记完账闲置归零）
 - 去结论化回归 13 项：注入行不再含「正想找他 / 真实的一天」、含「距上次说话已 45 分钟」这类事实、`opener` 与 `none` 的注入文本完全一致、短闲置不写闲置句、坏 JSON 时回落不抛错
+- 拒绝出口 18 项：默认不在窗口、设置后 `decide` 立刻转 `decline`、30 分钟后仍 `decline`（不被驱力更新冲掉）、3 小时后自动失效、`clear_decline` 立即结束、0.1→0.5 与 99→24 的时长夹取、注入行含安静事实且不含结论句、旧 `state.json` 自动补 `decline`、闸门四态（decline/sleepy/none/文件缺失 fail-open）
 - 线上：webchat 一次真实请求触发 `[Life] 首次注入状态：（你此刻：周二 13:25，宿舍，午睡，迷迷糊糊；手机还亮着。…）`，模型据此答「刚才在午睡呢，手机还亮着呢」
 
 ## 已知边界

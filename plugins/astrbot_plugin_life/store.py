@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCHEMA = 3
@@ -34,6 +34,10 @@ DRIVE_LABELS = {
 DRIVE_DEFAULT = 0.4
 DRIVE_LERP_KEEP = 0.7  # v_t = 0.7·v_{t-1} + 0.3·v_target
 DRIVE_LERP_NEW = 0.3
+
+# 她自己说「先别找我」的窗口：太短没意义，太长等于把主动权收走
+DECLINE_MIN_HOURS = 0.5
+DECLINE_MAX_HOURS = 24.0
 
 SELF_FIELDS = ("activity", "location", "mood", "note")
 SELF_LABELS = {
@@ -87,6 +91,11 @@ def _empty_decision() -> dict:
     return {"action": "none", "reason": "init", "drive": None, "value": None, "at": None}
 
 
+def _empty_decline() -> dict:
+    """她自己说的「先别找我」：只在她主动声明时写入，到期自动失效。"""
+    return {"until": None, "reason": None, "at": None}
+
+
 def _clamp(value: float) -> float:
     return round(min(1.0, max(0.0, float(value))), 4)
 
@@ -106,6 +115,7 @@ def _new_state(dt: datetime, boot_id: str) -> dict:
         "self": _empty_self(),
         "drives": _empty_drives(),
         "decision": _empty_decision(),
+        "decline": _empty_decline(),
     }
 
 
@@ -201,6 +211,13 @@ class LifeStore:
                 {k: v for k, v in state["decision"].items() if k in decision}
             )
         base["decision"] = decision
+
+        decline = _empty_decline()
+        if isinstance(state.get("decline"), dict):
+            decline.update(
+                {k: v for k, v in state["decline"].items() if k in decline}
+            )
+        base["decline"] = decline
         return base
 
     def save_state(self, state: dict) -> None:
@@ -400,6 +417,64 @@ class LifeStore:
     def drives(self) -> dict:
         return self.load_state()["drives"]
 
+    # ------------------------------------------------------- 拒绝出口
+
+    def decline_active(
+        self, dt: datetime | None = None
+    ) -> tuple[bool, str | None, str | None]:
+        """是否处在她自己声明的「先别找我」窗口。返回 (是否生效, 到期时间, 理由)。"""
+        dt = dt or now_local()
+        decline = self.load_state().get("decline") or {}
+        raw = decline.get("until")
+        if not raw:
+            return False, None, None
+        try:
+            deadline = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            return False, None, None
+        if deadline.tzinfo is not None and dt.tzinfo is None:
+            deadline = deadline.replace(tzinfo=None)
+        if deadline <= dt:
+            return False, raw, decline.get("reason")
+        return True, raw, decline.get("reason")
+
+    def set_decline(
+        self,
+        hours: float = 2.0,
+        reason: str = "",
+        dt: datetime | None = None,
+        journal: bool = True,
+    ) -> dict:
+        """她主动说「这会儿先别找我」：只写到期时间，到期自动失效，不需要谁去清。"""
+        dt = dt or now_local()
+        try:
+            span = float(hours)
+        except (TypeError, ValueError):
+            span = 2.0
+        span = min(DECLINE_MAX_HOURS, max(DECLINE_MIN_HOURS, span))
+        state = self.load_state()
+        deadline = dt + timedelta(hours=span)
+        note = (reason or "").strip()[:40] or None
+        state["decline"] = {"until": iso(deadline), "reason": note, "at": iso(dt)}
+        self.save_state(state)
+        if journal:
+            self._journal(
+                {"ts": iso(dt), "kind": "decline", "hours": span, **state["decline"]}
+            )
+        return state["decline"]
+
+    def clear_decline(self, dt: datetime | None = None, journal: bool = True) -> dict:
+        dt = dt or now_local()
+        state = self.load_state()
+        previous = state.get("decline") or {}
+        state["decline"] = _empty_decline()
+        self.save_state(state)
+        if journal and previous.get("until"):
+            self._journal(
+                {"ts": iso(dt), "kind": "decline_cleared", "until": previous.get("until")}
+            )
+        return state["decline"]
+
     def decide(
         self,
         social_threshold: float = 0.7,
@@ -415,8 +490,11 @@ class LifeStore:
         social = float(drives.get("social", DRIVE_DEFAULT))
         rest = float(drives.get("rest", DRIVE_DEFAULT))
         idle = self.idle_minutes(dt)
+        declining, decline_until, decline_reason = self.decline_active(dt)
 
-        if asleep:
+        if declining:
+            action, reason, drive, value = "decline", "self_declared", None, None
+        elif asleep:
             action, reason, drive, value = "sleepy", "asleep", "rest", rest
         elif rest >= 0.85:
             action, reason, drive, value = "sleepy", "tired", "rest", rest
@@ -433,10 +511,13 @@ class LifeStore:
             "action": action,
             "reason": reason,
             "drive": drive,
-            "value": _clamp(value),
+            "value": _clamp(value) if value is not None else None,
             "idle_minutes": idle,
             "at": iso(dt),
         }
+        if declining:
+            decision["until"] = decline_until
+            decision["note"] = decline_reason
         previous = (state.get("decision") or {}).get("action")
         state["decision"] = decision
         self.save_state(state)
@@ -547,6 +628,9 @@ class LifeStore:
         ]
         if noted:
             head += "你自己记过：" + "，".join(noted) + "。"
+        declining, until, _ = self.decline_active()
+        if declining and until:
+            head += f"你自己说过 {str(until)[11:16]} 之前先别找人说话。"
         return head + "不必复述这段。）"
 
     def summary(self) -> dict:
@@ -557,6 +641,7 @@ class LifeStore:
             "self": self.self_fields(),
             "drives": state.get("drives"),
             "decision": state.get("decision"),
+            "decline": state.get("decline"),
             "idle_minutes": self.idle_minutes(),
         }
 
