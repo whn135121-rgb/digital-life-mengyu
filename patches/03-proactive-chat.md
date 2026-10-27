@@ -84,3 +84,52 @@ if not life_ok:
 
 - `state.json` 缺失或坏 → `life_state_unreadable`，放行（宁可多发一条，也不要因为读不到状态而不说话）。
 - `life` 插件被禁用 → 同上，自动放行。
+
+## 追加补丁（2026-10-27 16:25）：opener 提前触发
+
+上一节说「提前发要改调度，属 S2」——这一版把其中**只读、可回退**的那部分做了，S2 的 jobstore 仍没动。
+
+**文件 3**：`core/task_scheduler.py`
+
+```python
+_LIFE_STATE = Path(__file__).resolve().parents[3] / "life" / "state.json"
+
+def _life_decision() -> dict:
+    try:
+        data = json.loads(_LIFE_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    decision = data.get("decision") or {}
+    return decision if isinstance(decision, dict) else {}
+```
+
+新增三个方法：`_opener_pullin_loop()`（每 120 秒一次，`asyncio.sleep` + 异常只 WARN）、`_maybe_pull_in_for_opener()`（`decision.action != "opener"` 直接返回）、`_pull_in_session()`（在 `data_lock` 内判断并改期）。
+
+`_pull_in_session()` 的闸门顺序：免打扰 → 未回复上限 → 冷却（`last_opener_pullin_at`，默认 30 分钟）→ 距原排期不足 5 分钟就不动 → `_add_chat_job()` 改到 1–4 分钟后，写回 `next_trigger_time` 并持久化。
+
+**文件 4**：`core/plugin_lifecycle.py`
+
+`_finalize_startup()` 在自动触发器之后 `asyncio.create_task(self._opener_pullin_loop())`（幂等：已有未结束的任务就不重复起）；`initialize()` 复位句柄；`terminate()` 一进来就取消，避免关闭过程中又排出新任务。
+
+**文件 5**：`core/data_storage.py`
+
+`_merge_session_info()` 的合并字段表加 `last_opener_pullin_at`（时间戳取较新者），否则与自动触发数据合并时冷却戳会丢，冷却形同虚设。
+
+**配置**：`_conf_schema.json` 与在线配置新增 `opener_pullin`
+
+| 键 | 默认 | 作用 |
+| --- | --- | --- |
+| `enabled` | true | 总开关 |
+| `check_seconds` | 120 | 巡检间隔 |
+| `min_minutes` / `max_minutes` | 1 / 4 | 提前到多久之后 |
+| `cooldown_minutes` | 30 | 两次提前之间最短间隔 |
+| `min_lead_minutes` | 5 | 本来就要发了就不动 |
+
+**为什么这么做**：判断归 `life`，发送归 `proactive_chat`。这一步只让「何时发」听一句对方的意见，发送仍是 `_is_chat_allowed()` 一票决定；两个插件之间只通过 `state.json` 单向传值，没有互相 import。
+
+**失败模式**
+
+- `state.json` 缺失 / 坏 JSON / 没有 `decision` → `_life_decision()` 返回 `{}`，巡检什么也不做（不抛错、不挡链路）。
+- `life` 被禁用 → 同上。
+- 免打扰、已达到未回复上限、冷却中、原排期已经更近 → 一律不动。
+- 巡检循环本身异常 → 只打 WARN，下一轮继续；`terminate()` 里先取消任务再关调度器。
