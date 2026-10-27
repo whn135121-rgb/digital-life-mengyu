@@ -1,0 +1,20 @@
+{
+  "tick_seconds": {
+    "type": "int",
+    "description": "检查间隔（秒）",
+    "hint": "每隔多久检查一次心跳与小时推进；30 秒够用，不要小于 5",
+    "default": 30
+  },
+  "heartbeat_seconds": {
+    "type": "int",
+    "description": "心跳间隔（秒）",
+    "hint": "heartbeat.json 的覆写间隔；S2 的 J3 判据按「2 倍间隔内必须有新心跳」验",
+    "default": 60
+  },
+  "journal_enabled": {
+    "type": "bool",
+    "description": "写每日流水",
+    "hint": "journal/YYYY-MM-DD.jsonl，记推进与自改状态；关掉只停写，不删已有",
+    "default": true
+  }
+}

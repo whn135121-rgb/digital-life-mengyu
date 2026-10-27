@@ -1,0 +1,27 @@
+# 运行数据与本地环境：一律不进仓库
+qqbot/
+_backup_*/
+.dsh-office-*/
+deepseek-harness-digital-life/
+
+# 密钥与配置
+.env
+*.env
+config.local.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 数据与日志
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.sqlite3
+
+# 临时
+_tmp*
+*.tmp
