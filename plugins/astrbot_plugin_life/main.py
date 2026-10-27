@@ -1,14 +1,16 @@
-"""astrbot_plugin_life —— 梦屿的「生活状态」骨架。
+"""astrbot_plugin_life —— 梦屿的「生活状态」与「驱力」。
 
-职责（只做六件事，别的都不做）：
+职责：
 1. 独占 `qqbot/data/life/` 的写入：state.json / heartbeat.json / journal/。
 2. 每小时幂等推进一次（重启不重放）。
 3. 每 60 秒写心跳（S2 的 J3 判据靠它）。
-4. 把作息模块算出的「此刻」落成事实快照（fact.schedule），不再由别处临时计算。
-5. 唯一注入点：`on_llm_request` 在系统提示末尾追加一行现状（可关）。
-6. 暴露 `life_state`（只读）/ `life_update`（她自己写）/ `/life`（管理员看）。
+4. 把作息模块算出的「此刻」落成事实快照（fact.schedule）。
+5. 维护四驱力（social/curiosity/play/rest）与其一阶滤波，按阈值给出「此刻该不该开口」的判断。
+6. 唯一注入点：`on_llm_request` 在系统提示末尾追加一行现状（可关）。
+7. 暴露 `life_state`（只读）/ `life_update`（她自己写）/ `/life`（管理员看）。
 
-刻意不做：不调用模型、不做意向判断、不调度别的任务。等 S2 的 jobstore 落地再谈。
+刻意不做：不调用模型、不负责发主动消息（发送仍归 proactive_chat，本插件只判断
+「她想不想说」，判断写在 state.json 的 decision 里，谁发谁看）。
 """
 
 from __future__ import annotations
@@ -17,16 +19,17 @@ import asyncio
 import importlib.util
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
-from .store import SELF_FIELDS, SELF_LABELS, LifeStore
+from .store import DRIVES, SELF_FIELDS, SELF_LABELS, LifeStore
 
 PLUGIN_NAME = "astrbot_plugin_life"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 LOG = "[Life]"
 
 # qqbot/data/plugins/astrbot_plugin_life/main.py -> qqbot/data
@@ -40,7 +43,29 @@ def _as_int(value, default: int) -> int:
         return default
 
 
-@register(PLUGIN_NAME, "dsh", "梦屿的生活状态：状态文件、小时推进、心跳、注入、只读/自写工具", VERSION)
+def _as_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _quiet_window(text: str) -> tuple[int, int] | None:
+    """把 "23-8" 解析成 (23, 8)；跨零点允许。"""
+    raw = (text or "").replace("：", ":").strip()
+    if not raw or "-" not in raw:
+        return None
+    left, _, right = raw.partition("-")
+    try:
+        start, end = int(left), int(right)
+    except ValueError:
+        return None
+    if not (0 <= start <= 23 and 0 <= end <= 24):
+        return None
+    return start, end
+
+
+@register(PLUGIN_NAME, "dsh", "梦屿的生活状态与驱力：状态文件、小时推进、心跳、四驱力、注入、只读/自写工具", VERSION)
 class LifePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -54,11 +79,17 @@ class LifePlugin(Star):
         self.journal_enabled = bool(config.get("journal_enabled", True))
         self.inject_enabled = bool(config.get("inject_enabled", True))
         self.schedule_file = str(config.get("schedule_file", "life_state.py") or "").strip()
+        self.drive_update_seconds = max(10, _as_int(config.get("drive_update_seconds", 60), 60))
+        self.social_threshold = min(1.0, max(0.0, _as_float(config.get("social_threshold", 0.7), 0.7)))
+        self.idle_trigger_minutes = max(1.0, _as_float(config.get("idle_trigger_minutes", 45), 45.0))
+        self.quiet_window = _quiet_window(str(config.get("quiet_hours", "23-8")))
         self._module = None
         self._module_error: str | None = None
         self._injected_once = False
         self._task: asyncio.Task | None = None
         self._last_beat = 0.0
+        self._last_drive = 0.0
+        self._last_action: str | None = None
         self._started = False
         self._ensure_task()
 
@@ -128,6 +159,7 @@ class LifePlugin(Star):
             logger.info(f"{LOG} 推进到 {result['slot']}（第 {result['count']} 次）")
         else:
             self._refresh_fact()
+        self._update_drives()
 
     async def terminate(self) -> None:
         if self._task is not None and not self._task.done():
@@ -182,19 +214,134 @@ class LifePlugin(Star):
             return
         self.store.refresh_schedule(data, journal=self.journal_enabled)
 
+    # ------------------------------------------------------------ 驱力
+
+    def _state_now(self) -> dict | None:
+        module = self._schedule()
+        if module is None:
+            return None
+        try:
+            return module.state()
+        except Exception as exc:
+            logger.warning(f"{LOG} 计算作息状态失败：{exc!r}")
+            return None
+
+    def _in_quiet(self, now: datetime) -> bool:
+        if not self.quiet_window:
+            return False
+        start, end = self.quiet_window
+        if start == end:
+            return False
+        if start < end:
+            return start <= now.hour < end
+        return now.hour >= start or now.hour < end
+
+    def _drive_targets(self, now: datetime, sched: dict | None) -> dict:
+        """把「现在几点、她在干什么、多久没说话」折算成四驱力的目标值。
+
+        social 随闲置分钟线性上升（45 分钟 ≈ 0.75，跨过 0.7 阈值），睡觉/上课/静默
+        时段分别压到 0.2 / 0.55 / 0.25；rest 由作息段直接给；不引入随机量。
+        """
+        idle = self.store.idle_minutes(now)
+        doing = str((sched or {}).get("doing") or "")
+        asleep = "睡" in doing
+        in_class = ("课" in doing) and not asleep
+        quiet = self._in_quiet(now)
+
+        social = min(0.95, 0.15 + idle / 75.0)
+        if asleep:
+            social = min(social, 0.20)
+        elif in_class:
+            social = min(social, 0.55)
+        if quiet:
+            social = min(social, 0.25)
+
+        if asleep:
+            rest = 0.95
+        elif now.hour >= 21 or now.hour < 8:
+            rest = 0.55
+        else:
+            rest = 0.30
+
+        return {
+            "social": round(social, 3),
+            "curiosity": 0.30 if (asleep or quiet) else 0.55,
+            "play": 0.30 if (asleep or in_class) else 0.50,
+            "rest": round(rest, 3),
+            "inputs": {
+                "idle_minutes": idle,
+                "doing": doing,
+                "asleep": asleep,
+                "in_class": in_class,
+                "quiet": quiet,
+            },
+        }
+
+    def _update_drives(
+        self, force: bool = False, sched: dict | None = None, decide_now: bool = True
+    ) -> dict | None:
+        """按 drive_update_seconds 落一次驱力与判断；失败只记日志，不影响对话。"""
+        now_mono = time.time()
+        if not force and now_mono - self._last_drive < self.drive_update_seconds:
+            return None
+        self._last_drive = now_mono
+        try:
+            current = datetime.now()
+            snapshot = sched if sched is not None else self._state_now()
+            targets = self._drive_targets(current, snapshot)
+            self.store.update_drives(targets, journal=self.journal_enabled)
+            if not decide_now:
+                return None
+            decision = self.store.decide(
+                social_threshold=self.social_threshold,
+                idle_trigger_minutes=self.idle_trigger_minutes,
+                quiet=bool(targets["inputs"].get("quiet")),
+                asleep=bool(targets["inputs"].get("asleep")),
+                dt=current,
+            )
+            if decision.get("action") != self._last_action:
+                self._last_action = decision.get("action")
+                logger.info(
+                    f"{LOG} 判断 → {decision.get('action')}（{decision.get('reason')}，"
+                    f"{decision.get('drive')}={decision.get('value')}，"
+                    f"闲置 {decision.get('idle_minutes')} 分钟）"
+                )
+            return decision
+        except Exception as exc:
+            logger.warning(f"{LOG} 更新驱力失败：{exc!r}")
+            return None
+
     # ------------------------------------------------------------ 注入
 
     @filter.on_llm_request()
     async def inject_state(self, event: AstrMessageEvent, req):
-        """把一行现状拼到系统提示末尾（唯一注入点，ai_delay 的旧注入已关）。"""
-        if not self.inject_enabled:
-            return
+        """把一行现状拼到系统提示末尾（唯一注入点，ai_delay 的旧注入已关）。
+
+        顺序有讲究：先按「这条消息到达之前」的闲置时长判断一次（此时还可能是
+        opener，会带一句「隔了一阵没人说话」），生成状态行，然后才记账并更新驱力。
+        """
         self._ensure_task()
+        line = ""
+        if self.inject_enabled:
+            try:
+                current = datetime.now()
+                sched = self._state_now()
+                targets = self._drive_targets(current, sched)
+                self.store.decide(
+                    social_threshold=self.social_threshold,
+                    idle_trigger_minutes=self.idle_trigger_minutes,
+                    quiet=bool(targets["inputs"].get("quiet")),
+                    asleep=bool(targets["inputs"].get("asleep")),
+                    dt=current,
+                )
+                line = self.store.render_line()
+            except Exception as exc:
+                logger.warning(f"{LOG} 生成状态行失败：{exc!r}")
         try:
-            line = self.store.render_line()
+            self.store.touch_talk(journal=self.journal_enabled)
         except Exception as exc:
-            logger.warning(f"{LOG} 生成状态行失败：{exc!r}")
-            return
+            logger.warning(f"{LOG} 记录对话时间失败：{exc!r}")
+        self._update_drives(force=True, decide_now=False)
         if not line:
             return
         base = getattr(req, "system_prompt", "") or ""

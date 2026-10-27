@@ -28,5 +28,29 @@
     "description": "作息模块文件名",
     "hint": "相对 data/life/ 的文件名，默认 life_state.py；留空表示不用作息表，状态只保留她自己填的那栏",
     "default": "life_state.py"
+  },
+  "drive_update_seconds": {
+    "type": "int",
+    "description": "驱力更新间隔（秒）",
+    "hint": "四驱力与判断多久落一次盘；60 秒足够，太小只会多写文件",
+    "default": 60
+  },
+  "social_threshold": {
+    "type": "float",
+    "description": "想说话的阈值",
+    "hint": "social 超过它、且闲置超过下面的分钟数，判断才是「想找他」；0.7 对应大约半小时到一小时没人说话",
+    "default": 0.7
+  },
+  "idle_trigger_minutes": {
+    "type": "float",
+    "description": "闲置触发分钟",
+    "hint": "距上一句话超过多少分钟才允许「想找他」；调小会让提示出现得更频繁",
+    "default": 45
+  },
+  "quiet_window": {
+    "type": "string",
+    "description": "静默时段",
+    "hint": "格式 23-8，表示 23 点到次日 8 点；静默时段不发主动提示、social 目标压低",
+    "default": "23-8"
   }
 }
