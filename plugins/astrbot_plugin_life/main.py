@@ -29,7 +29,7 @@ from astrbot.api.star import Context, Star, register
 from .store import DRIVES, SELF_FIELDS, SELF_LABELS, LifeStore
 
 PLUGIN_NAME = "astrbot_plugin_life"
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 LOG = "[Life]"
 
 # qqbot/data/plugins/astrbot_plugin_life/main.py -> qqbot/data
@@ -240,7 +240,12 @@ class LifePlugin(Star):
         """把「现在几点、她在干什么、多久没说话」折算成四驱力的目标值。
 
         social 随闲置分钟线性上升（45 分钟 ≈ 0.75，跨过 0.7 阈值），睡觉/上课/静默
-        时段分别压到 0.2 / 0.55 / 0.25；rest 由作息段直接给；不引入随机量。
+        时段分别压到 0.2 / 0.72 / 0.25；rest 由作息段直接给；不引入随机量。
+
+        上课时段的上限是 0.72 而不是 0.55：0.55 会让目标永远够不到 0.7 阈值，
+        一下午都在上课就等于一下午不可能「想说话」。0.72 仍压得比平时低，
+        但因为低通每拍只走 30%，从 0.55 爬到 0.7 要约 6 拍（≈6 分钟），
+        实际效果是「课上久了才会冒出想找他的念头」，不是一进教室就开口。
         """
         idle = self.store.idle_minutes(now)
         doing = str((sched or {}).get("doing") or "")
@@ -252,7 +257,7 @@ class LifePlugin(Star):
         if asleep:
             social = min(social, 0.20)
         elif in_class:
-            social = min(social, 0.55)
+            social = min(social, 0.72)
         if quiet:
             social = min(social, 0.25)
 
