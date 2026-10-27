@@ -21,7 +21,7 @@
 提交前自查一遍：
 
 ```powershell
-git diff --cached | Select-String -Pattern 'AstrBot@|sk-[A-Za-z0-9]{10,}|[0-9]{9,11}'
+git diff --cached | Select-String -Pattern 'AstrBot@|SnowLuma@|sk-[A-Za-z0-9]{10,}|[0-9]{9,11}'
 ```
 
 ## 3. 代码边界
