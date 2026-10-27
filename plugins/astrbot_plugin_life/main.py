@@ -29,7 +29,7 @@ from astrbot.api.star import Context, Star, register
 from .store import DRIVES, SELF_FIELDS, SELF_LABELS, LifeStore
 
 PLUGIN_NAME = "astrbot_plugin_life"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 LOG = "[Life]"
 
 # qqbot/data/plugins/astrbot_plugin_life/main.py -> qqbot/data
@@ -425,6 +425,31 @@ class LifePlugin(Star):
                 f"作息模块：{self.schedule_file}（{'已加载' if self._module else '未加载'}）",
             ]
             yield event.plain_result("\n".join(lines)).use_t2i(False)
+            return
+        if arg in {"why", "reason", "原因", "判断"}:
+            state = self.store.load_state()
+            now = datetime.now()
+            sched = self._state_now()
+            targets = self._drive_targets(now, sched)
+            drives = self.store.drives()
+            decision = state.get("decision") or {}
+            rows = [
+                f"此刻：{sched.get('weekday')} {sched.get('local')}，{sched.get('place')}，{sched.get('doing')}",
+                f"闲置：{self.store.idle_minutes():.1f} 分钟（阈值 {self.idle_trigger_minutes:g}）",
+            ]
+            for name in ("social", "curiosity", "play", "rest"):
+                rows.append(
+                    f"{name}: 当前 {drives.get(name, 0):.3f} / 目标 {targets.get(name, 0):.3f}"
+                )
+            rows.append(
+                f"输入：上课 {targets['inputs'].get('in_class')}、睡觉 {targets['inputs'].get('asleep')}、静默 {targets['inputs'].get('quiet')}"
+            )
+            rows.append(
+                f"判断：{decision.get('action')}（理由 {decision.get('reason')}，"
+                f"{decision.get('drive')}={decision.get('value')}，{decision.get('at')}）"
+            )
+            rows.append(f"阈值：social ≥ {self.social_threshold:g} 且闲置 ≥ {self.idle_trigger_minutes:g} 分钟 → opener")
+            yield event.plain_result("\n".join(rows)).use_t2i(False)
             return
         self._refresh_fact()
         yield event.plain_result(self.store.render()).use_t2i(False)
