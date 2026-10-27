@@ -14,7 +14,19 @@
   "journal_enabled": {
     "type": "bool",
     "description": "写每日流水",
-    "hint": "journal/YYYY-MM-DD.jsonl，记推进与自改状态；关掉只停写，不删已有",
+    "hint": "journal/YYYY-MM-DD.jsonl，记推进、事实刷新与自改状态；关掉只停写，不删已有",
     "default": true
+  },
+  "inject_enabled": {
+    "type": "bool",
+    "description": "注入对话",
+    "hint": "在系统提示末尾追加一行「你此刻在哪儿、在做什么」。开启前请确认 ai_delay 的旧注入已关，否则会出现两行",
+    "default": true
+  },
+  "schedule_file": {
+    "type": "string",
+    "description": "作息模块文件名",
+    "hint": "相对 data/life/ 的文件名，默认 life_state.py；留空表示不用作息表，状态只保留她自己填的那栏",
+    "default": "life_state.py"
   }
 }

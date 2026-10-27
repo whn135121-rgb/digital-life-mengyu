@@ -1,9 +1,9 @@
 """生活状态的持久化层（只依赖标准库，可脱离 AstrBot 单测）。
 
 数据目录：`qqbot/data/life/`
-  state.json                她的「自选」状态 + 推进记账
+  state.json                事实快照 + 她的「自选」状态 + 推进记账
   heartbeat.json            心跳，每 60 秒覆写一次
-  journal/YYYY-MM-DD.jsonl  当天流水（推进、自改状态各一行）
+  journal/YYYY-MM-DD.jsonl  当天流水（推进、事实刷新、自改状态各一行）
 
 三条约束（来自《大肥鱼系统：技术术语与概念.md》v3.2 §0.3 S1）：
 1. facts 由系统给，不可伪造；self 由她自己填，**未设置就保持 null**，不冒认。
@@ -16,13 +16,23 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
-SCHEMA = 1
+SCHEMA = 2
 WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 SELF_FIELDS = ("activity", "location", "mood", "note")
+SELF_LABELS = {
+    "activity": "在做什么",
+    "location": "在哪",
+    "mood": "心情",
+    "note": "备注",
+}
+
+# 事实快照里只放「系统算得出的东西」，她自己的话一律进 self
+FACT_FIELDS = ("slot", "slot_key", "place", "doing", "mood", "detail", "local", "weekday")
+FACT_MAX = 120
 
 
 def now_local() -> datetime:
@@ -30,7 +40,7 @@ def now_local() -> datetime:
 
 
 def slot_of(dt: datetime) -> str:
-    """小时槽，形如 2026-10-27T12。"""
+    """小时槽，形如 2026-10-27T13。"""
     return dt.strftime("%Y-%m-%dT%H")
 
 
@@ -49,6 +59,10 @@ def _empty_self() -> dict:
     return data
 
 
+def _empty_fact() -> dict:
+    return {"schedule": None, "updated_at": None}
+
+
 def _new_state(dt: datetime, boot_id: str) -> dict:
     return {
         "schema": SCHEMA,
@@ -58,6 +72,7 @@ def _new_state(dt: datetime, boot_id: str) -> dict:
         "last_advance_at": None,
         "advance_count": 0,
         "journal_today": 0,
+        "fact": _empty_fact(),
         "self": _empty_self(),
     }
 
@@ -116,6 +131,18 @@ class LifeStore:
     def _normalize(self, state: dict) -> dict:
         base = _new_state(now_local(), self._boot_id)
         base.update({k: v for k, v in state.items() if k in base})
+        base["schema"] = SCHEMA  # 旧版本文件读上来后顺手升到当前 schema
+
+        fact = dict(_empty_fact())
+        raw_fact = state.get("fact")
+        if isinstance(raw_fact, dict):
+            if isinstance(raw_fact.get("schedule"), dict):
+                fact["schedule"] = {
+                    k: raw_fact["schedule"].get(k) for k in FACT_FIELDS
+                }
+            fact["updated_at"] = raw_fact.get("updated_at")
+        base["fact"] = fact
+
         self_block = dict(_empty_self())
         if isinstance(state.get("self"), dict):
             self_block.update(
@@ -169,6 +196,41 @@ class LifeStore:
             "count": state["advance_count"],
         }
 
+    # ---------------------------------------------------------------- 事实
+
+    def refresh_schedule(self, data: dict | None, journal: bool = True) -> dict | None:
+        """把作息算出的「此刻」写成事实快照；data 为空表示作息模块不可用。"""
+        if not data:
+            return None
+        snapshot = {}
+        for key in FACT_FIELDS:
+            value = data.get(key)
+            if value is None:
+                continue
+            text = str(value)
+            snapshot[key] = text[:FACT_MAX]
+        if not snapshot:
+            return None
+        state = self.load_state()
+        current = (state.get("fact") or {}).get("schedule") or {}
+        if current.get("slot_key") == snapshot.get("slot_key") and current.get("detail") == snapshot.get("detail"):
+            return snapshot
+        state["fact"]["schedule"] = snapshot
+        state["fact"]["updated_at"] = iso(now_local())
+        self.save_state(state)
+        if journal:
+            self._journal(
+                {
+                    "ts": iso(now_local()),
+                    "kind": "fact",
+                    "what": "schedule",
+                    "slot_key": snapshot.get("slot_key"),
+                    "place": snapshot.get("place"),
+                    "doing": snapshot.get("doing"),
+                }
+            )
+        return snapshot
+
     # ---------------------------------------------------------------- 心跳
 
     def beat(self, dt: datetime | None = None, extra: dict | None = None) -> dict:
@@ -201,7 +263,10 @@ class LifeStore:
         if field not in SELF_FIELDS:
             raise ValueError(f"unknown field: {field}")
         state = self.load_state()
-        state["self"][field] = None if value is None else str(value).strip()[:80] or None
+        cleaned = None if value is None else str(value).strip()[:80] or None
+        if state["self"].get(field) == cleaned:
+            return state["self"]
+        state["self"][field] = cleaned
         state["self"]["updated_at"] = iso(now_local())
         state["self"]["source"] = source
         self.save_state(state)
@@ -210,7 +275,7 @@ class LifeStore:
                 "ts": iso(now_local()),
                 "kind": "self",
                 "field": field,
-                "value": state["self"][field],
+                "value": cleaned,
                 "source": source,
             }
         )
@@ -239,38 +304,85 @@ class LifeStore:
             "boot_id": self._boot_id,
         }
 
-    def render(self, dt: datetime | None = None) -> str:
-        """给模型看的一段话；未设置的字段明说「未设置」。"""
-        dt = dt or now_local()
-        facts = self.facts(dt)
+    def schedule(self) -> dict | None:
         state = self.load_state()
-        me = state["self"]
+        return (state.get("fact") or {}).get("schedule") or None
+
+    def self_fields(self) -> dict:
+        return self.load_state()["self"]
+
+    def render(self) -> str:
+        """给模型/管理员看的完整两栏；未设置的字段明说「未设置」。"""
+        facts = self.facts()
+        me = self.self_fields()
+        sched = self.schedule()
 
         def value(name: str) -> str:
             raw = me.get(name)
             return raw if raw else "未设置"
 
+        if sched:
+            moment = (
+                f"{sched.get('weekday') or ''} {sched.get('place') or ''}，"
+                f"{sched.get('doing') or ''}，{sched.get('mood') or ''}"
+            ).strip("， ")
+            if sched.get("detail"):
+                moment += f"；{sched['detail']}"
+        else:
+            moment = "未设置（作息模块不可用）"
+
         beat = facts["heartbeat"] or "无"
         lines = [
             "【生活状态（只读）】",
             f"- 系统给的：现在是 {facts['now_human']}，时段 {facts['slot']}；"
+            f"此刻 {moment}；"
             f"今天已推进 {facts['advance_count']} 次，最近一次 {facts['last_advance_at'] or '无'}；"
             f"心跳 {beat}。",
-            f"- 她自己填的：活动={value('activity')}；地点={value('location')}；"
+            f"- 她自己填的：在做什么={value('activity')}；在哪={value('location')}；"
             f"心情={value('mood')}；备注={value('note')}。",
-            f"- 她上次改这些是 {me.get('updated_at') or '无'}。"
-            "没填的就是没填，不要替她补。",
+            f"- 她上次改这些是 {me.get('updated_at') or '无'}。没填的就是没填，不要替她补。",
         ]
         return "\n".join(lines)
 
+    def render_line(self) -> str:
+        """注入对话的一句话（≤110 字）：只有系统事实 + 她自己填过的字段。"""
+        sched = self.schedule()
+        me = self.self_fields()
+        if sched:
+            head = (
+                f"（你此刻：{sched.get('weekday') or ''} {sched.get('local', '')[11:]}，"
+                f"{sched.get('place') or ''}，{sched.get('doing') or ''}，{sched.get('mood') or ''}"
+            )
+            if sched.get("detail"):
+                head += f"；{sched['detail']}"
+            head += "。这是你真实的一天，不用主动交代，也别把这句括号原样说出来。"
+        else:
+            head = "（你此刻：时间与作息暂时读不到，别猜。"
+        noted = [
+            f"{SELF_LABELS[name]}={me[name]}"
+            for name in SELF_FIELDS
+            if me.get(name)
+        ]
+        if noted:
+            head += "你自己记过：" + "，".join(noted) + "。）"
+        else:
+            head += "）"
+        return head
+
     def summary(self) -> dict:
-        return {"facts": self.facts(), "self": self.load_state()["self"]}
+        return {
+            "facts": self.facts(),
+            "schedule": self.schedule(),
+            "self": self.self_fields(),
+        }
 
 
 __all__ = [
     "LifeStore",
     "SCHEMA",
     "SELF_FIELDS",
+    "SELF_LABELS",
+    "FACT_FIELDS",
     "WEEKDAYS",
     "human",
     "iso",

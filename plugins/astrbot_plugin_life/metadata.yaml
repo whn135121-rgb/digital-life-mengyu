@@ -1,5 +1,5 @@
 name: astrbot_plugin_life
-desc: 梦屿的生活状态骨架：独占 life 目录、每小时幂等推进、每 60 秒心跳、只读工具 life_state 与管理命令 /life。
-version: v0.1.0
+desc: 梦屿的生活状态：独占 life 目录、每小时幂等推进、60 秒心跳、作息事实快照、对话内唯一注入点，以及 life_state（只读）/ life_update（自写）两个工具。
+version: v0.2.0
 author: dsh
 repo: ""
