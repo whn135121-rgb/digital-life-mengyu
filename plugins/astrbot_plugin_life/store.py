@@ -22,14 +22,18 @@ from pathlib import Path
 SCHEMA = 3
 WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
-# 四驱力（《大肥鱼系统：技术术语与概念.md》§4.1 的六维里先落四个：
-# recognition / achievement 需要关系与成就数据，S4/S5 再说）
-DRIVES = ("social", "curiosity", "play", "rest")
+# 六驱力（《大肥鱼系统：技术术语与概念.md》§4.1 的六维）：social / curiosity / play /
+# rest 四个先落；recognition / achievement 2026-10-28 补齐（S1），目标值由闲置与当日产物决定。
+# [dsh 本地补丁 2026-10-28] S1：补 recognition / achievement 两个驱力。
+# 只进 state.json 与 /life 展示，不参与 decide() 的阈值判断（避免一次改两处行为）。
+DRIVES = ("social", "curiosity", "play", "rest", "recognition", "achievement")
 DRIVE_LABELS = {
     "social": "想说话",
     "curiosity": "好奇",
     "play": "想玩",
     "rest": "累",
+    "recognition": "想被看见",
+    "achievement": "想做成点什么",
 }
 DRIVE_DEFAULT = 0.4
 DRIVE_LERP_KEEP = 0.7  # v_t = 0.7·v_{t-1} + 0.3·v_target

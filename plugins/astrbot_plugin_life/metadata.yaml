@@ -1,5 +1,5 @@
 name: astrbot_plugin_life
-desc: 梦屿的生活状态与驱力：独占 life 目录、S2 单 APScheduler + jobs.db 持久化、按任务心跳与启动自检、每小时幂等推进、作息事实快照、四驱力低通（social/curiosity/play/rest）、阈值判断（想找他/困了/静默/他自己说的先别找），对话内唯一注入点（状态行/会话交接/昨日摘要），严格只读的 life_state（availability/今天时间线/睡眠深度）、life_update（自写）、life_decline（说「先别找我」）三个工具；入睡浅睡可直接唤醒、深睡普通私聊拦截、/急事 每日配额叫醒，醒后浅睡窗口 5 分钟起每次减半；/life diary 按天读 journal；/life stats 看主动消息状态触发占比；proactive_chat 按 availability 收口并回写触发来源。
-version: v0.9.3
+desc: 梦屿的生活状态与驱力：独占 life 目录、S2 单 APScheduler + jobs.db 持久化、按任务心跳与启动自检、每小时幂等推进、作息事实快照、六驱力低通（social/curiosity/play/rest/recognition/achievement，后两个 2026-10-28 补齐、不参与阈值判断）、阈值判断（想找他/困了/静默/他自己说的先别找），对话内唯一注入点（状态行/会话交接/昨日摘要/world 产物），严格只读的 life_state（availability/今天时间线/睡眠深度）、life_update（自写）、life_decline（说「先别找我」）三个工具；入睡浅睡可直接唤醒、深睡普通私聊拦截并暂存到 sleep_inbox.json、醒来后首轮注入、/急事 每日配额叫醒，醒后浅睡窗口 5 分钟起每次减半；S5 世界目录：每天 21 点把当天 journal 生成三件「自己的事」（文字/文字关卡/涂鸦 SVG）到 life/world/，次日注入一句摘要；/life diary 按天读 journal；/life world 看或重生成世界目录；/life 与 /life why 显示六个驱力；/life stats 看主动消息状态触发占比；proactive_chat 按 availability 收口并回写触发来源。
+version: v0.10.1
 author: dsh
 repo: ""

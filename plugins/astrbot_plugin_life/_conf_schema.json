@@ -136,5 +136,23 @@
     "description": "昨日摘要字数上限",
     "hint": "默认 180 字；至少 60。超过会截断，避免把整篇日记塞回上下文。",
     "default": 180
+  },
+  "world_enabled": {
+    "type": "bool",
+    "description": "世界目录（S5）",
+    "hint": "每天 21 点后用当天 journal 生成三件「自己的事」（一段文字/一个小关卡/一张涂鸦 SVG）到 life\\world\\，次日注入一句摘要；只读 journal，不调模型。关掉只停生成与注入，不删已有产物。",
+    "default": true
+  },
+  "world_hour": {
+    "type": "int",
+    "description": "世界目录生成时刻",
+    "hint": "0–23 点；当天 journal 到点后生成，昨天漏掉的下个 tick 补；默认 21。",
+    "default": 21
+  },
+  "world_brief_max_chars": {
+    "type": "int",
+    "description": "世界摘要字数上限",
+    "hint": "次日注入「昨天你自己做的：…」的字数上限，默认 60；至少 20。",
+    "default": 60
   }
 }

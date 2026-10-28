@@ -38,7 +38,7 @@ from .store import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_life"
-VERSION = "0.9.3"
+VERSION = "0.10.1"
 LOG = "[Life]"
 
 # qqbot/data/plugins/astrbot_plugin_life/main.py -> qqbot/data
@@ -121,17 +121,25 @@ class LifePlugin(Star):
         self.catchup_platform_id = str(config.get("platform_id", "qq-snowluma") or "").strip()
         self.day_brief_enabled = _as_bool(config.get("day_brief_enabled", True), True)
         self.day_brief_max_chars = max(60, _as_int(config.get("day_brief_max_chars", 180), 180))
+        # [dsh 本地补丁 2026-10-28] S5：世界目录（每天三件「自己的事」）
+        self.world_enabled = _as_bool(config.get("world_enabled", True), True)
+        self.world_hour = min(23, max(0, _as_int(config.get("world_hour", 21), 21)))
+        self.world_brief_max_chars = max(20, _as_int(config.get("world_brief_max_chars", 60), 60))
         self.params = None
         self.handover = None
         self.catchup = None
         self.sleep_depth = None
+        self.sleep_inbox = None
         self.trigger_stats = None
+        self.world = None
         try:
             self.params = self._load_life_module("mengyu_life_params", "params.py")
             self.handover = self._load_life_module("mengyu_life_handover", "handover.py")
             self.catchup = self._load_life_module("mengyu_life_catchup", "catchup.py")
             self.sleep_depth = self._load_life_module("mengyu_life_sleep", "sleep_depth.py")
+            self.sleep_inbox = self._load_life_module("mengyu_life_sleep_inbox", "sleep_inbox.py")
             self.trigger_stats = self._load_life_module("mengyu_life_trigger_stats", "trigger_stats.py")
+            self.world = self._load_life_module("mengyu_life_world", "world.py")
             if self.params:
                 self.params.load(self.root)
         except Exception as exc:
@@ -143,6 +151,7 @@ class LifePlugin(Star):
             self._boot_hb_age = 0.0
         self._handover_injected: set[str] = set()
         self._day_brief_injected: set[str] = set()
+        self._world_injected: set[str] = set()
         self._module = None
         self._module_error: str | None = None
         self._injected_once = False
@@ -158,16 +167,28 @@ class LifePlugin(Star):
     # ------------------------------------------------------------ 生命周期
 
     def _load_life_module(self, name: str, filename: str):
-        """从 data/life/ 加载纯函数模块；模块名固定，热重载复用缓存。"""
-        if name in sys.modules:
-            return sys.modules[name]
+        """从 data/life/ 加载纯函数模块；模块名固定，文件没改就复用缓存。
+
+        [dsh 本地补丁 2026-10-28] 这些模块不在 data/plugins/ 下，AstrBot 热重载
+        不会清它们的 sys.modules 缓存；改完 world.py 这类文件后不重启进程就还是
+        旧代码。这里按文件 mtime 判断：文件变过就重新 exec，没变才用缓存
+        （scheduler_runtime 这类持有进程内状态的模块，文件不动就不会被重装）。
+        """
         path = self.root / filename
         if not path.exists():
             raise FileNotFoundError(f"缺少生活模块：{path}")
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        cached = sys.modules.get(name)
+        if cached is not None and getattr(cached, "__dsh_mtime__", None) == mtime:
+            return cached
         spec = importlib.util.spec_from_file_location(name, path)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"无法加载生活模块：{path}")
         module = importlib.util.module_from_spec(spec)
+        module.__dsh_mtime__ = mtime
         sys.modules[name] = module
         spec.loader.exec_module(module)
         return module
@@ -313,6 +334,7 @@ class LifePlugin(Star):
         self._update_drives()
         self._refresh_availability()
         self._maybe_diary()
+        self._maybe_world()
 
     def _maybe_diary(self) -> None:
         """21 点后落盘当天日记；顺手补昨天漏掉的。失败只记日志，不影响心跳。"""
@@ -324,6 +346,47 @@ class LifePlugin(Star):
             self.store.write_diary(yesterday)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"{LOG} 日记落盘失败：{exc!r}")
+
+    # [dsh 本地补丁 2026-10-28] S5：世界目录（每天三件「自己的事」落盘 + 次日注入）
+    def _maybe_world(self, now: datetime | None = None) -> None:
+        """21 点后生成当天三件产物；顺手补昨天漏掉的。失败只记日志。
+
+        Args:
+            now: 判定用的当前时间，仅测试注入；None 表示取系统时间。
+        """
+        if not getattr(self, "world_enabled", False) or not getattr(self, "world", None):
+            return
+        now = now or datetime.now()
+        try:
+            if now.hour >= self.world_hour:
+                self._generate_world(now.strftime("%Y-%m-%d"))
+            self._generate_world((now - timedelta(days=1)).strftime("%Y-%m-%d"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"{LOG} 世界目录生成失败：{exc!r}")
+
+    def _generate_world(self, day: str, force: bool = False) -> dict:
+        """按当天 journal 事实生成三件产物；没有 journal 的那天不动。"""
+        journal = self.store.journal_dir / f"{day}.jsonl"
+        if not journal.exists():
+            return {}
+        digest = self.store.day_digest(day)
+        facts = digest.get("facts") or []
+        drives = self.store.drives() if day == datetime.now().strftime("%Y-%m-%d") else {}
+        result = self.world.generate(self.root, day, facts=facts, drives=drives, force=force)
+        if result.get("created"):
+            logger.info(f"{LOG} 世界目录已生成：{day}（{len(result.get('items') or [])} 件）")
+        return result
+
+    def _world_brief(self, day: str) -> str:
+        if not getattr(self, "world_enabled", False) or not getattr(self, "world", None):
+            return ""
+        try:
+            return self.world.prompt_line(
+                self.root, day, max_chars=self.world_brief_max_chars
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"{LOG} 读取世界目录失败：{exc!r}")
+            return ""
 
     async def terminate(self) -> None:
         # 插件热重载不销毁 scheduler：任务留在 jobs.db，回调会在新实例里重新注册。
@@ -521,19 +584,51 @@ class LifePlugin(Star):
         else:
             rest = 0.30
 
+        # [dsh 本地补丁 2026-10-28] S1：recognition 随「多久没人回应」上升；
+        # achievement 随「今天还没留下东西」上升。两个都只看事实，不参与 decide()。
+        recognition = min(0.90, 0.20 + idle / 120.0)
+        if asleep:
+            recognition = min(recognition, 0.20)
+        elif quiet:
+            recognition = min(recognition, 0.25)
+        elif in_class:
+            recognition = min(recognition, 0.60)
+
+        today_done = self._today_world_done(now)
+        achievement = 0.30 if today_done else 0.62
+        if asleep:
+            achievement = min(achievement, 0.15)
+        elif quiet:
+            achievement = min(achievement, 0.30)
+        elif in_class:
+            achievement = min(achievement, 0.45)
+
         return {
             "social": round(social, 3),
             "curiosity": 0.30 if (asleep or quiet) else 0.55,
             "play": 0.30 if (asleep or in_class) else 0.50,
             "rest": round(rest, 3),
+            "recognition": round(recognition, 3),
+            "achievement": round(achievement, 3),
             "inputs": {
                 "idle_minutes": idle,
                 "doing": doing,
                 "asleep": asleep,
                 "in_class": in_class,
                 "quiet": quiet,
+                "today_done": today_done,
             },
         }
+
+    def _today_world_done(self, now: datetime) -> bool:
+        """今天是否已经有「自己的事」落盘（S5 的世界目录）。失败一律当没做成。"""
+        world = getattr(self, "world", None)
+        if world is None:
+            return False
+        try:
+            return world.meta_path(self.root, now.strftime("%Y-%m-%d")).exists()
+        except Exception:
+            return False
 
     def _update_drives(
         self, force: bool = False, sched: dict | None = None, decide_now: bool = True
@@ -632,7 +727,27 @@ class LifePlugin(Star):
         allowed = getattr(self, "sleep_wake_uids", set())
         return not allowed or str(user_id) in allowed
 
+    def _remember_sleep_message(
+        self, event: AstrMessageEvent, user_id: str, text: str, phase: str
+    ) -> None:
+        """深睡拦截时把正文暂存，醒来后的第一轮请求再交给她。"""
+        module = getattr(self, "sleep_inbox", None)
+        if module is None:
+            return
+        try:
+            session = str(getattr(event, "unified_msg_origin", "") or "")
+            module.add(
+                self.root,
+                session=session,
+                user_id=user_id,
+                text=text,
+                phase=phase,
+            )
+        except Exception as exc:
+            logger.warning(f"{LOG} 暂存睡眠消息失败：{exc!r}")
+
     def _block_sleep(self, event: AstrMessageEvent, user_id: str, text: str, phase: str) -> None:
+        self._remember_sleep_message(event, user_id, text, phase)
         try:
             if self.journal_enabled:
                 self.store.journal_event(
@@ -646,7 +761,7 @@ class LifePlugin(Star):
                 )
         except Exception as exc:
             logger.warning(f"{LOG} 记录睡眠拦截失败：{exc!r}")
-        logger.info(f"{LOG} 睡眠闸门拦截 {user_id}（{phase}，{len(text)} 字）")
+        logger.info(f"{LOG} 睡眠闸门拦截 {user_id}（{phase}，{len(text)} 字），已暂存待醒来")
         event.stop_event()
 
     @filter.event_message_type(
@@ -851,6 +966,37 @@ class LifePlugin(Star):
                 except Exception as exc:
                     logger.warning(f"{LOG} 读取昨日摘要失败：{exc!r}")
 
+        world_line = ""
+        world_seen = getattr(self, "_world_injected", set())
+        if getattr(self, "world_enabled", False) and session:
+            today_text = datetime.now().strftime("%Y-%m-%d")
+            world_key = f"{session}:world:{today_text}"
+            if world_key not in world_seen:
+                world_line = self._world_brief(
+                    (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                )
+                if world_line:
+                    world_seen.add(world_key)
+
+        pending_line = ""
+        pending_ids: list[str] = []
+        if getattr(self, "sleep_inbox", None) and session:
+            try:
+                _, pending_state = self._peek_state()
+                awake = pending_state.get("availability") != "sleep"
+                if event.get_extra("life_urgent") or event.get_extra("life_wake_light"):
+                    awake = True
+                if awake:
+                    pending_line, pending_ids = self.sleep_inbox.render(
+                        self.root,
+                        session=session,
+                        user_id=str(event.get_sender_id() or ""),
+                    )
+                    if pending_ids:
+                        event.set_extra("life_pending_ids", pending_ids)
+            except Exception as exc:
+                logger.warning(f"{LOG} 读取睡眠暂存失败：{exc!r}")
+
         base = getattr(req, "system_prompt", "") or ""
         if "（你此刻：" in base:
             line = ""
@@ -858,7 +1004,15 @@ class LifePlugin(Star):
             handover_line = ""
         if "（昨天你：" in base:
             day_brief_line = ""
-        extra = "\n\n".join(part for part in (line, handover_line, day_brief_line) if part)
+        if "（昨天你自己做的：" in base:
+            world_line = ""
+        if "（你睡着时收到的消息：" in base:
+            pending_line = ""
+        extra = "\n\n".join(
+            part
+            for part in (line, handover_line, day_brief_line, world_line, pending_line)
+            if part
+        )
         if not extra:
             return
         try:
@@ -872,9 +1026,17 @@ class LifePlugin(Star):
     @filter.on_llm_response()
     async def capture_handover(self, event: AstrMessageEvent, resp):
         """每轮成功回复后累计交接窗口；满 N 轮生成三句摘要。"""
+        text = str(getattr(resp, "completion_text", "") or "").strip()
+        pending_ids = event.get_extra("life_pending_ids") or []
+        if text and pending_ids and getattr(self, "sleep_inbox", None):
+            try:
+                removed = self.sleep_inbox.clear(self.root, list(pending_ids))
+                if removed:
+                    logger.info(f"{LOG} 睡眠暂存已交付：{removed} 条")
+            except Exception as exc:
+                logger.warning(f"{LOG} 清理睡眠暂存失败：{exc!r}")
         if not self.handover_enabled or not self.handover:
             return
-        text = str(getattr(resp, "completion_text", "") or "").strip()
         user = self._message_text(event)
         session = str(getattr(event, "unified_msg_origin", "") or "")
         if len(user) < 2 or len(text) < 2 or not session:
@@ -989,7 +1151,7 @@ class LifePlugin(Star):
     @filter.command("life")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def life_cmd(self, event: AstrMessageEvent):
-        """查看生活状态文件（管理员）：/life 状态，/life files 文件位置，/life stats 触发占比"""
+        """查看生活状态文件（管理员）：/life 状态，/life files 文件位置，/life stats 触发占比，/life world 世界目录"""
         if not event.is_admin():
             yield event.plain_result("权限不足：仅 AstrBot 管理员可以查看。")
             return
@@ -1095,6 +1257,9 @@ class LifePlugin(Star):
                 f"params.json：{'存在' if (self.root / 'params.json').exists() else '缺失'}",
                 f"handover.json：{'存在' if (self.root / 'handover.json').exists() else '缺失'}",
                 f"proactive_stats.json：{'存在' if (self.root / 'proactive_stats.json').exists() else '缺失'}",
+                f"sleep_inbox.json：{'存在' if (self.root / 'sleep_inbox.json').exists() else '缺失'}",
+                f"world：{'已启用' if getattr(self, 'world_enabled', False) else '已关'}"
+                f"（{len(self.world.summary(self.root).get('days', [])) if getattr(self, 'world', None) else 0} 天有产物）",
                 f"boot_id：{state.get('boot_id')}",
                 f"推进次数：{state.get('advance_count')}，最近 {state.get('last_advance')}",
                 f"availability：{state.get('availability')}（{state.get('availability_reason')}）",
@@ -1102,6 +1267,35 @@ class LifePlugin(Star):
                 f"作息模块：{self.schedule_file}（{'已加载' if self._module else '未加载'}）",
             ]
             yield event.plain_result("\n".join(lines)).use_t2i(False)
+            return
+        if arg in {"world", "世界"} or arg.startswith("world ") or arg.startswith("世界 "):
+            if not getattr(self, "world", None):
+                yield event.plain_result("世界目录模块未加载。").use_t2i(False)
+                return
+            parts = raw.split()
+            force = len(parts) > 1 and parts[1].lower() in {"make", "做", "生成"}
+            day_arg = parts[2] if force and len(parts) > 2 else (parts[1] if len(parts) > 1 and not force else None)
+            day = day_arg or datetime.now().strftime("%Y-%m-%d")
+            try:
+                datetime.strptime(day, "%Y-%m-%d")
+            except ValueError:
+                yield event.plain_result(
+                    "日期要写成 YYYY-MM-DD，例如 /life world 2026-10-27。"
+                ).use_t2i(False)
+                return
+            try:
+                result = self._generate_world(day, force=force)
+            except Exception as exc:  # noqa: BLE001
+                yield event.plain_result(f"生成失败：{exc}").use_t2i(False)
+                return
+            if not result:
+                yield event.plain_result(f"{day} 没有 journal，先不生成。").use_t2i(False)
+                return
+            head = "已重新生成" if force and result.get("created") else "已生成"
+            text = self.world.render_index(self.root, day)
+            if result.get("created"):
+                text = f"{head} {day} 的 {len(result.get('items') or [])} 件。\n" + text
+            yield event.plain_result(text).use_t2i(False)
             return
         if arg in {"why", "reason", "原因", "判断"}:
             state = self.store.load_state()
@@ -1115,12 +1309,12 @@ class LifePlugin(Star):
                 f"availability：{state.get('availability')}（{state.get('availability_reason')}）",
                 f"闲置：{self.store.idle_minutes():.1f} 分钟（阈值 {self.idle_trigger_minutes:g}）",
             ]
-            for name in ("social", "curiosity", "play", "rest"):
+            for name in DRIVES:
                 rows.append(
                     f"{name}: 当前 {drives.get(name, 0):.3f} / 目标 {targets.get(name, 0):.3f}"
                 )
             rows.append(
-                f"输入：上课 {targets['inputs'].get('in_class')}、睡觉 {targets['inputs'].get('asleep')}、静默 {targets['inputs'].get('quiet')}"
+                f"输入：上课 {targets['inputs'].get('in_class')}、睡觉 {targets['inputs'].get('asleep')}、静默 {targets['inputs'].get('quiet')}、今天做成 {targets['inputs'].get('today_done')}"
             )
             rows.append(
                 f"判断：{decision.get('action')}（理由 {decision.get('reason')}，"
