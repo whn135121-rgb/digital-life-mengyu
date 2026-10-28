@@ -66,9 +66,11 @@ delay *= uniform(1 - delay_jitter, 1 + delay_jitter)
 2. `on_decorating_result`（约 :538）命中时只把**短句**存进 `self._pending_fix[session]`，不发。
 3. 新增 `@filter.after_message_sent()`（约 :619）：等这一轮所有分段都发完，再延迟 1.2–2.4 秒补发那条短句（「打错了，那我就陪你耗着呗」）。
 
-新增配置：`typo_probability=0.12`、`typo_delay_min=1.2`、`typo_delay_max=2.4`。
+新增配置：`typo_probability=0`、`typo_delay_min=1.2`、`typo_delay_max=2.4`。
 
-**为什么值得做**：90 条消息里 0 个错字、0 次自我更正，是「太完美」的主要来源。允许她打错、然后自己补一句，比任何提示词都更像人。
+**2026-10-27 晚修正**：用户反馈「前面错字、后面打错了」太刻意。代码保留，但 `typo_probability` 现网与默认都改为 `0`，插件不再强行制造错字；正文里要不要打错、要不要补一句，由梦屿自己写。`typo_delay_*` 只在有人手动调高概率时才生效。
+
+**为什么当初值得做**：90 条消息里 0 个错字、0 次自我更正，是「太完美」的主要来源。但机械补句会被一眼看穿，所以最终选择关掉插件注入，而不是继续加规则。
 
 ---
 

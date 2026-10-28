@@ -6,7 +6,7 @@
 
 | 补丁 | 插件 | 文件 | 目的 |
 | --- | --- | --- | --- |
-| [`01-ai-delay.md`](01-ai-delay.md) | `astrbot_plugin_ai_delay` v1.2.1 | `main.py` | 延迟按字数、注入生活状态、正在输入、长回复回执、错字自补 |
+| [`01-ai-delay.md`](01-ai-delay.md) | `astrbot_plugin_ai_delay` v1.2.1 | `main.py` | 延迟按字数、注入生活状态、正在输入、长回复回执、错字自补（默认关闭） |
 | [`02-meme-manager.md`](02-meme-manager.md) | `meme_manager` v5.2.6 | `main.py`、`mixins/event_handlers.py` | 情感选图加超时，别把回复链路堵死 |
 | [`03-proactive-chat.md`](03-proactive-chat.md) | `astrbot_plugin_proactive_chat` v1.2.6 | `core/llm_adapter.py` | 主动消息也带「此刻在哪、在干什么」 |
 | [`04-self-learning.md`](04-self-learning.md) | `astrbot_plugin_self_learning` 4.4.2 | `services/analysis/expression_pattern_learner.py` | 表达模式入库前过滤低价值样本 |
