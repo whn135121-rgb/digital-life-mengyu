@@ -66,3 +66,20 @@ _PUNCT_ONLY = re.compile(r"^[\s\W_]+$", re.UNICODE)
 ## 升级注意
 
 这是四个补丁里唯一**动到 AGPL-3.0 代码**的：本仓库只写说明、不分发源码。升级后按上面的函数名重新加，别整文件覆盖。
+
+## 追加补丁（2026-10-28）：好感度事件驱动 + 阶段词
+
+起因：S4 要的「10 类事件各 +1、长期不互动每周 −1、取消硬顶、能说出阶段」原来一条都没实现——好感度只有数值，且 `affection_facade.py` 里写死 `max_affection=100` 是第二道隐形硬顶。
+
+**新增** `services/state/affection_events.py`（纯函数）：十类事件（chat / compliment / praise / encourage / support / flirt / comfort / thanks / care / gift）、`silence_weeks()` / `silence_delta()`（每满 7 天 −1，最多 −12）、`clamp_level(level, hard_cap=None)`、`stage_for()`（刚认识 / 眼熟 / 普通朋友 / 比较熟 / 很熟了 / 离不开 / 自己人）、`render_stage_line()`。
+
+**改** `services/state/affection_manager.py`：`update_affection()` 先结算长期不互动扣分，再按事件 +1（同一天同类只加一次，进程内 `_event_seen` 去重），`new_level = clamp_level(..., hard_cap)`；负面交互（侮辱/骚扰/谩骂/威胁）仍走原规则。
+
+**改** `repositories/affection_repository.py`、`services/database/facades/affection_facade.py`、`services/database/sqlalchemy_database_manager.py`：`max_level` 允许 `None`（不封顶，只保底 0）。
+
+**改** `services/social/social_context_injector.py`：注入行追加「（阶段：离不开）」并在 v0.2.30 补「被问到关系时先说这个阶段词」——不加大模型就会答「挺熟了吧」。
+
+**配置**：`affection_event_mode`（默认 true）、`affection_hard_cap_enabled`（默认 false）。
+
+**已验证**：`tests/_t_s4_affection.py` 51/51；2026-10-28 15:47 真人验收通过（好感度 107/100 → 答出「离不开」）。
+

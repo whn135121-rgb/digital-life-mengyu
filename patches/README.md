@@ -2,6 +2,8 @@
 
 这四个插件都从 AstrBot 插件市场安装，源码不随本仓库分发（体积 + 版权，其中 `self_learning` 是 AGPL-3.0）。这里只记录**改了哪个文件、哪一行、原值、新值、为什么、升级会不会被覆盖**。
 
+> 2026-10-28 起共五个：新增 `05-livingmemory.md`（强化 / 预算 / 证据链），`04-self-learning.md` 追加了 S4 好感度事件驱动。
+
 ## 总表
 
 | 补丁 | 插件 | 文件 | 目的 |
@@ -9,7 +11,8 @@
 | [`01-ai-delay.md`](01-ai-delay.md) | `astrbot_plugin_ai_delay` v1.2.1 | `main.py` | 延迟按字数、注入生活状态、正在输入、长回复回执、错字自补（默认关闭） |
 | [`02-meme-manager.md`](02-meme-manager.md) | `meme_manager` v5.2.6 | `main.py`、`mixins/event_handlers.py` | 情感选图加超时，别把回复链路堵死 |
 | [`03-proactive-chat.md`](03-proactive-chat.md) | `astrbot_plugin_proactive_chat` v1.2.6 | `core/llm_adapter.py` | 主动消息也带「此刻在哪、在干什么」 |
-| [`04-self-learning.md`](04-self-learning.md) | `astrbot_plugin_self_learning` 4.4.2 | `services/analysis/expression_pattern_learner.py` | 表达模式入库前过滤低价值样本 |
+| [`04-self-learning.md`](04-self-learning.md) | `astrbot_plugin_self_learning` 4.4.2 | `services/analysis/expression_pattern_learner.py`、`services/state/affection_manager.py` 等 | 表达模式入库前过滤低价值样本；好感度改事件驱动并注入阶段词 |
+| [`05-livingmemory.md`](05-livingmemory.md) | `astrbot_plugin_livingmemory` 2.8.0 | `core/retrieval/`、`core/utils/`、`core/event_handler_modules/memory_recall.py` 等 | 召回强化（O4）、1200 字注入预算、原子证据链 |
 
 ## 三个共同前提
 
